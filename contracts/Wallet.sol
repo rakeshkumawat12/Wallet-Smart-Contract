@@ -1,6 +1,6 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.26;
-//Transaction - from,to,timings,amount
+
 contract Wallet {
     struct Transaction {
         address from;
@@ -14,9 +14,15 @@ contract Wallet {
     address public owner;
     string public str;
     bool public stop;
+    string public emergencyReason;
+
+    mapping(address => uint) suspiciousUser;
+    mapping(address => bool) public blackListed;
+
     event Transfer(address receiver, uint amount);
-    event Receive(address sender, uint amonut);
+    event Receive(address sender, uint amount);
     event ReceiveUser(address sender, address receiver, uint amount);
+    event OwnerChanged(address oldOwner, address newOwner);
 
     constructor() {
         owner = msg.sender;
@@ -26,7 +32,6 @@ contract Wallet {
         require(msg.sender == owner, "You don't have access");
         _;
     }
-    mapping(address => uint) suspiciousUser;
 
     modifier getSuspiciousUser(address _sender) {
         require(
@@ -41,8 +46,14 @@ contract Wallet {
         _;
     }
 
-    function toggleStop() external onlyOwner {
+    modifier notBlackListed(address _address) {
+        require(!blackListed[_address], "Address is blacklisted");
+        _;
+    }
+
+    function toggleStop(string memory reason) external onlyOwner {
         stop = !stop;
+        emergencyReason = reason;
     }
 
     function changOwner(address newOwner) public onlyOwner isEmergencyDeclared {
@@ -52,7 +63,12 @@ contract Wallet {
     /**Contract related functions**/
     function transferToContract(
         uint _startTime
-    ) external payable getSuspiciousUser(msg.sender) {
+    )
+        external
+        payable
+        getSuspiciousUser(msg.sender)
+        notBlackListed(msg.sender)
+    {
         require(block.timestamp > _startTime, "send after start time");
         transactionHistory.push(
             Transaction({
@@ -69,7 +85,7 @@ contract Wallet {
         uint _weiAmount
     ) external onlyOwner {
         require(address(this).balance >= _weiAmount, "Insufficient Balance");
-        require(_to != address(0), "Adress format incorrect");
+        require(_to != address(0), "Address format incorrect");
         _to.transfer(_weiAmount);
         transactionHistory.push(
             Transaction({
@@ -101,8 +117,7 @@ contract Wallet {
 
     /**User related functions**/
     function transferToUserViaMsgValue(address _to) external payable {
-        require(address(this).balance >= msg.value, "Insufficient Balance");
-        require(_to != address(0), "Adress format incorrect");
+        require(_to != address(0), "Address format incorrect");
         payable(_to).transfer(msg.value);
         transactionHistory.push(
             Transaction({
@@ -114,7 +129,7 @@ contract Wallet {
         );
     }
 
-    //event - sender,receiver, amount
+    //event - sender, receiver, amount
     function receiveFromUser() external payable {
         require(msg.value > 0, "Wei Value must be greater than zero");
         payable(owner).transfer(msg.value);
@@ -127,30 +142,23 @@ contract Wallet {
                 amount: msg.value
             })
         );
+        emit Receive(msg.sender, msg.value);
     }
 
     function getOwnerBalanceInWei() external view returns (uint) {
         return owner.balance;
     }
 
-    receive() external payable {
-        transactionHistory.push(
-            Transaction({
-                from: msg.sender,
-                to: address(this),
-                timestamp: block.timestamp,
-                amount: msg.value
-            })
-        );
-        emit Receive(msg.sender, msg.value);
-    }
-
-    function suspiciousActivity(address _sender) public {
+    function suspiciousActivity(address _sender) internal {
         suspiciousUser[_sender] += 1;
     }
 
-    fallback() external {
-        suspiciousActivity(msg.sender);
+    function blacklistUser(address _address) external onlyOwner {
+        blackListed[_address] = true;
+    }
+
+    function removeFromBlacklist(address _address) external onlyOwner {
+        blackListed[_address] = false;
     }
 
     function getTransactionHistory()
@@ -165,11 +173,27 @@ contract Wallet {
         require(stop == true, "Emergency not declared");
         payable(owner).transfer(address(this).balance);
     }
-}
 
-//Add the following features
-//1.Setting and Changing Owner done
-//2.Emergency Stop
-//3. Emergency Withdrawl
-//4. Check for invalid address done
-//5. Transaction history - from,to,amount,timestamp done
+    function changeOwner(
+        address newOwner
+    ) public onlyOwner isEmergencyDeclared {
+        emit OwnerChanged(owner, newOwner);
+        owner = newOwner;
+    }
+
+    receive() external payable {
+        transactionHistory.push(
+            Transaction({
+                from: msg.sender,
+                to: address(this),
+                timestamp: block.timestamp,
+                amount: msg.value
+            })
+        );
+        emit Receive(msg.sender, msg.value);
+    }
+
+    fallback() external {
+        suspiciousActivity(msg.sender);
+    }
+}
